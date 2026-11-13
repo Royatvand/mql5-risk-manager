@@ -3,7 +3,7 @@
 //|   Risk-based sizing + market/pending orders + protection + panel |
 //+------------------------------------------------------------------+
 #property copyright "Smart Money Manager"
-#property version   "2.30"
+#property version   "2.31"
 #property description "Advanced money management EA with a modern on-chart panel."
 #property description "Market + Limit + Stop orders, drag-and-drop SL/TP chart tool, risk-% lot sizing,"
 #property description "daily loss/profit limits, drawdown guard, loss streak lock, open-risk cap,"
@@ -300,7 +300,7 @@ void BuildPanel()
    Rect("hdr",x,y,PW,46,C_HEADER,C_HEADER);
    Rect("hdr_line",x,y+46,PW,2,C_ACCENT,C_ACCENT);
    Lbl("title",x+pad,y+7,"SMART MONEY MANAGER",C_TEXT,11,"Segoe UI Semibold");
-   Lbl("sub",x+pad,y+26,_Symbol+"  |  Risk Engine v2.3",C_MUTED,8);
+   Lbl("sub",x+pad,y+26,_Symbol+"  |  Risk Engine v2.31",C_MUTED,8);
    Btn("btn_min",x+PW-38,y+10,26,26,"–",C_BTN,C_TEXT,11);
    Lbl("dot",x+PW-48,y+13,"●",C_ACCENT,14,"Segoe UI",ANCHOR_RIGHT_UPPER);
 
@@ -710,10 +710,17 @@ void RefreshNews()
    if(now<=0)
      {
       gNewsStatus="Waiting for trade-server time";
+      if(InpNewsLevel!=NEWS_OFF)
+        {
+         gNewsBlock=true;
+         gNewsInfo="Calendar unavailable";
+        }
       return;
      }
 
-   int days=MathMax(1,MathMin(14,InpNewsDisplayDays));
+   int days=InpNewsDisplayDays;
+   if(days<1) days=1;
+   if(days>14) days=14;
    datetime from=now-60*60;
    datetime to=now+(datetime)days*86400;
    int minImp=(InpNewsLevel==NEWS_HIGH)? (int)CALENDAR_IMPORTANCE_HIGH :
@@ -754,6 +761,14 @@ void RefreshNews()
             if(gNewsInfo=="") gNewsInfo=cur[c]+" "+ev.name;
            }
         }
+     }
+
+   // Fail closed when the filter is enabled but the terminal cannot supply
+   // calendar data; never silently trade through an unavailable news feed.
+   if(!gNewsDataOK && InpNewsLevel!=NEWS_OFF)
+     {
+      gNewsBlock=true;
+      gNewsInfo="Calendar unavailable";
      }
 
    for(int i=0;i<ArraySize(gNews)-1;i++)
