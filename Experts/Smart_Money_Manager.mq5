@@ -3,7 +3,7 @@
 //|   Risk-based sizing + market/pending orders + protection + panel |
 //+------------------------------------------------------------------+
 #property copyright "Smart Money Manager"
-#property version   "2.31"
+#property version   "2.32"
 #property description "Advanced money management EA with a modern on-chart panel."
 #property description "Market + Limit + Stop orders, drag-and-drop SL/TP chart tool, risk-% lot sizing,"
 #property description "daily loss/profit limits, drawdown guard, loss streak lock, open-risk cap,"
@@ -88,7 +88,9 @@ input int    InpPanelY           = 25;       // Panel Y
 
 //--- constants
 #define PFX "SMM_"
-#define PW  330
+#define PW  380
+#define NEWS_ROWS 6
+#define HEADLINE_ROWS 4
 
 //--- palette
 #define C_BG        C'16,20,31'
@@ -316,7 +318,7 @@ void BuildPanel()
    Rect("hdr",x,y,PW,46,C_HEADER,C_HEADER);
    Rect("hdr_line",x,y+46,PW,2,C_ACCENT,C_ACCENT);
    Lbl("title",x+pad,y+7,"SMART MONEY MANAGER",C_TEXT,11,"Segoe UI Semibold");
-   Lbl("sub",x+pad,y+26,_Symbol+"  |  Risk Engine v2.31",C_MUTED,8);
+   Lbl("sub",x+pad,y+26,_Symbol+"  |  Risk Engine v2.32",C_MUTED,8);
    Btn("btn_min",x+PW-38,y+10,26,26,"–",C_BTN,C_TEXT,11);
    Lbl("dot",x+PW-48,y+13,"●",C_ACCENT,14,"Segoe UI",ANCHOR_RIGHT_UPPER);
 
@@ -464,30 +466,30 @@ void BuildPanel()
    cy+=24;
    Lbl("news_status",x+pad,cy,"Loading calendar...",C_MUTED,8);
    cy+=22;
-   Rect("news_card",x+pad-4,cy-4,inner+8,326,C_CARD,C_BORDER);
-   for(int i=0;i<8;i++)
+   Rect("news_card",x+pad-4,cy-4,inner+8,236,C_CARD,C_BORDER);
+   for(int i=0;i<NEWS_ROWS;i++)
      {
-      int ry=cy+i*40;
-      Lbl("news_meta_"+IntegerToString(i),x+pad+4,ry+2,"-",C_WARN,8,"Segoe UI Semibold");
-      Lbl("news_title_"+IntegerToString(i),x+pad+4,ry+19,"-",C_TEXT,8);
-      if(i<7) Rect("news_sep_"+IntegerToString(i),x+pad+4,ry+37,inner-8,1,C_BORDER,C_BORDER);
+      int ry=cy+i*38;
+      Lbl("news_meta_"+IntegerToString(i),x+pad+6,ry+2,"-",C_WARN,8,"Segoe UI Semibold");
+      Lbl("news_title_"+IntegerToString(i),x+pad+6,ry+18,"-",C_TEXT,9);
+      if(i<NEWS_ROWS-1) Rect("news_sep_"+IntegerToString(i),x+pad+6,ry+35,inner-12,1,C_BORDER,C_BORDER);
      }
-   cy+=336;
+   cy+=246;
 
    Lbl("live_headlines_head",x+pad,cy,"LIVE MARKET / POLITICAL HEADLINES",C_ACCENT,8,"Segoe UI Semibold");
    Btn("btn_headline_refresh",x+PW-pad-76,cy-3,76,22,"UPDATE",C_BTN,C_TEXT,8);
    cy+=22;
    Lbl("headline_status",x+pad,cy,"Loading live headlines...",C_MUTED,7);
    cy+=18;
-   Rect("headline_card",x+pad-4,cy-4,inner+8,176,C_CARD,C_BORDER);
-   for(int i=0;i<5;i++)
+   Rect("headline_card",x+pad-4,cy-4,inner+8,132,C_CARD,C_BORDER);
+   for(int i=0;i<HEADLINE_ROWS;i++)
      {
-      int ry=cy+i*34;
-      Lbl("headline_title_"+IntegerToString(i),x+pad+4,ry+1,"-",C_TEXT,8);
-      Lbl("headline_meta_"+IntegerToString(i),x+pad+4,ry+17,"-",C_MUTED,7);
-      if(i<4) Rect("headline_sep_"+IntegerToString(i),x+pad+4,ry+32,inner-8,1,C_BORDER,C_BORDER);
+      int ry=cy+i*32;
+      Lbl("headline_title_"+IntegerToString(i),x+pad+6,ry+1,"-",C_TEXT,9);
+      Lbl("headline_meta_"+IntegerToString(i),x+pad+6,ry+17,"-",C_MUTED,8);
+      if(i<HEADLINE_ROWS-1) Rect("headline_sep_"+IntegerToString(i),x+pad+6,ry+29,inner-12,1,C_BORDER,C_BORDER);
      }
-   cy+=184;
+   cy+=140;
    gTabH[4]=cy-y;
 
    // ---------------- finish ----------------
@@ -965,7 +967,7 @@ color NewsImportanceColor(int importance)
 void UpdateNewsPanel()
   {
    SetTxt("news_status",gNewsStatus,C_MUTED);
-   for(int i=0;i<8;i++)
+   for(int i=0;i<NEWS_ROWS;i++)
      {
       string meta="-";
       string title=(i==0 && !gNewsDataOK)? "Economic calendar data is not available" : "No event";
@@ -975,7 +977,7 @@ void UpdateNewsPanel()
          meta=gNews[i].currency+" | "+NewsImportanceName(gNews[i].importance)+
               " | "+TimeToString(gNews[i].time,TIME_DATE|TIME_MINUTES);
          title=gNews[i].title;
-         if(StringLen(title)>43) title=StringSubstr(title,0,40)+"...";
+         if(StringLen(title)>58) title=StringSubstr(title,0,55)+"...";
          clr=NewsImportanceColor(gNews[i].importance);
         }
       SetTxt("news_meta_"+IntegerToString(i),meta,clr);
@@ -983,17 +985,17 @@ void UpdateNewsPanel()
      }
 
    SetTxt("headline_status",gHeadlineStatus,gHeadlineDataOK? C_MUTED : C_WARN);
-   for(int i=0;i<5;i++)
+   for(int i=0;i<HEADLINE_ROWS;i++)
      {
       string title=(i==0 && !gHeadlineDataOK)? "Live news unavailable" : "No headline";
       string meta="-";
       if(i<gHeadlineCount)
         {
          title=gHeadlines[i].title;
-         if(StringLen(title)>48) title=StringSubstr(title,0,45)+"...";
+         if(StringLen(title)>58) title=StringSubstr(title,0,55)+"...";
          meta=gHeadlines[i].source;
          if(gHeadlines[i].seen!="") meta+=" | "+gHeadlines[i].seen+" UTC";
-         if(StringLen(meta)>58) meta=StringSubstr(meta,0,55)+"...";
+         if(StringLen(meta)>66) meta=StringSubstr(meta,0,63)+"...";
         }
       SetTxt("headline_title_"+IntegerToString(i),title,i<gHeadlineCount? C_TEXT:C_MUTED);
       SetTxt("headline_meta_"+IntegerToString(i),meta,C_MUTED);
