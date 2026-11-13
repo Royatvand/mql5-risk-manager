@@ -62,6 +62,8 @@ input ENUM_NEWS_LEVEL InpNewsLevel = NEWS_OFF; // News filter (MT5 economic cale
 input int    InpNewsBefore       = 30;     // Block minutes before news
 input int    InpNewsAfter        = 30;     // Block minutes after news
 input int    InpNewsDisplayDays   = 3;      // Days ahead shown in News tab
+input bool   InpUseLiveHeadlines  = true;   // Show live market/political headlines (GDELT)
+input int    InpHeadlineRefreshMinutes = 5; // Live headline refresh interval (minutes)
 
 input group "=== Trade Management ==="
 input bool   InpUseBE            = true;   // Auto break-even
@@ -155,6 +157,20 @@ datetime gNewsLastUpdate=0;
 bool     gNewsBlock=false;
 string   gNewsInfo="";
 string   gNewsStatus="Calendar not loaded";
+
+//--- live market / political headlines (GDELT DOC API; UTC timestamps)
+struct HeadlineItem
+  {
+   string title;
+   string source;
+   string seen;
+   string url;
+  };
+HeadlineItem gHeadlines[];
+int      gHeadlineCount=0;
+datetime gHeadlineLastRequest=0;
+bool     gHeadlineDataOK=false;
+string   gHeadlineStatus="Live headlines not loaded";
 
 //+------------------------------------------------------------------+
 //| UI helpers                                                       |
@@ -457,6 +473,21 @@ void BuildPanel()
       if(i<7) Rect("news_sep_"+IntegerToString(i),x+pad+4,ry+37,inner-8,1,C_BORDER,C_BORDER);
      }
    cy+=336;
+
+   Lbl("live_headlines_head",x+pad,cy,"LIVE MARKET / POLITICAL HEADLINES",C_ACCENT,8,"Segoe UI Semibold");
+   Btn("btn_headline_refresh",x+PW-pad-76,cy-3,76,22,"UPDATE",C_BTN,C_TEXT,8);
+   cy+=22;
+   Lbl("headline_status",x+pad,cy,"Loading live headlines...",C_MUTED,7);
+   cy+=18;
+   Rect("headline_card",x+pad-4,cy-4,inner+8,176,C_CARD,C_BORDER);
+   for(int i=0;i<5;i++)
+     {
+      int ry=cy+i*34;
+      Lbl("headline_title_"+IntegerToString(i),x+pad+4,ry+1,"-",C_TEXT,8);
+      Lbl("headline_meta_"+IntegerToString(i),x+pad+4,ry+17,"-",C_MUTED,7);
+      if(i<4) Rect("headline_sep_"+IntegerToString(i),x+pad+4,ry+32,inner-8,1,C_BORDER,C_BORDER);
+     }
+   cy+=184;
    gTabH[4]=cy-y;
 
    // ---------------- finish ----------------
@@ -794,6 +825,127 @@ void RefreshNews()
       gNewsStatus=IntegerToString(gNewsCount)+" events | Server time "+TimeToString(now,TIME_MINUTES);
   }
 
+
+string JsonStringValue(string obj,string key)
+  {
+   string token="\""+key+"\"";
+   int p=StringFind(obj,token);
+   if(p<0) return "";
+   p=StringFind(obj,":",p+StringLen(token));
+   if(p<0) return "";
+   p++;
+   while(p<StringLen(obj) &&
+         (StringGetCharacter(obj,p)==' ' || StringGetCharacter(obj,p)=='\t'))
+      p++;
+   if(p>=StringLen(obj) || StringGetCharacter(obj,p)!='"') return "";
+   p++;
+   string out="";
+   bool escaped=false;
+   for(int i=p;i<StringLen(obj);i++)
+     {
+      ushort ch=(ushort)StringGetCharacter(obj,i);
+      if(escaped)
+        {
+         if(ch=='n' || ch=='r' || ch=='t') out+=" ";
+         else out+=ShortToString(ch);
+         escaped=false;
+         continue;
+        }
+      if(ch=='\\') { escaped=true; continue; }
+      if(ch=='"') break;
+      out+=ShortToString(ch);
+     }
+   return out;
+  }
+
+void RefreshHeadlines(bool force=false)
+  {
+   if(!InpUseLiveHeadlines)
+     {
+      gHeadlineStatus="Live headlines disabled";
+      return;
+     }
+
+   datetime now=TimeGMT();
+   if(now<=0) now=TimeCurrent();
+   int refreshMinutes=MathMax(1,MathMin(60,InpHeadlineRefreshMinutes));
+   if(gHeadlineLastRequest>0 && now-gHeadlineLastRequest<5)
+      return; // GDELT DOC API: do not request more often than every 5 seconds
+   if(!force && gHeadlineLastRequest>0 &&
+      now-gHeadlineLastRequest<refreshMinutes*60)
+      return;
+
+   gHeadlineLastRequest=now;
+   gHeadlineDataOK=false;
+   gHeadlineCount=0;
+   ArrayResize(gHeadlines,0);
+
+   // GDELT DOC 2.0 is free and requires no API key. Search covers Trump,
+   // Fed/Powell, tariffs, sanctions, inflation, rates and broad FX headlines.
+   string url="https://api.gdeltproject.org/api/v2/doc/doc?query=%28Trump%20OR%20%22Federal%20Reserve%22%20OR%20Powell%20OR%20tariffs%20OR%20sanctions%20OR%20%22US%20Treasury%22%20OR%20%22interest%20rates%22%20OR%20inflation%20OR%20forex%20OR%20%22US%20dollar%22%29&mode=artlist&format=json&maxrecords=20&timespan=24h&sort=HybridRel";
+
+   char post[];
+   char response[];
+   string responseHeaders="";
+   ArrayResize(post,0);
+   ResetLastError();
+   int http=WebRequest("GET",url,"","",10000,post,0,response,responseHeaders);
+   if(http!=200)
+     {
+      int err=GetLastError();
+      if(http==-1)
+         gHeadlineStatus="GDELT connection error "+IntegerToString(err)+
+                         " | Allow api.gdeltproject.org in MT5 WebRequest";
+      else
+         gHeadlineStatus="GDELT HTTP "+IntegerToString(http);
+      return;
+     }
+
+   string json=CharArrayToString(response,0,-1,CP_UTF8);
+   int arr=StringFind(json,"\"articles\"");
+   if(arr<0)
+     {
+      gHeadlineStatus="GDELT returned no articles field";
+      return;
+     }
+   arr=StringFind(json,"[",arr);
+   if(arr<0)
+     {
+      gHeadlineStatus="GDELT response format unavailable";
+      return;
+     }
+
+   int pos=arr+1;
+   while(pos<StringLen(json) && gHeadlineCount<20)
+     {
+      int start=StringFind(json,"{",pos);
+      if(start<0) break;
+      int finish=StringFind(json,"}",start+1);
+      if(finish<0) break;
+      string obj=StringSubstr(json,start,finish-start+1);
+      string title=JsonStringValue(obj,"title");
+      string link=JsonStringValue(obj,"url");
+      string source=JsonStringValue(obj,"domain");
+      string seen=JsonStringValue(obj,"seendate");
+      if(title!="" && link!="")
+        {
+         int n=ArraySize(gHeadlines);
+         ArrayResize(gHeadlines,n+1);
+         gHeadlines[n].title=title;
+         gHeadlines[n].source=source;
+         gHeadlines[n].seen=seen;
+         gHeadlines[n].url=link;
+         gHeadlineCount++;
+        }
+      pos=finish+1;
+     }
+
+   gHeadlineDataOK=true;
+   gHeadlineStatus=(gHeadlineCount>0)?
+      IntegerToString(gHeadlineCount)+" headlines | GDELT | Last 24h":
+      "No matching headlines in the last 24h";
+  }
+
 string NewsImportanceName(int importance)
   {
    if(importance==(int)CALENDAR_IMPORTANCE_HIGH) return "HIGH";
@@ -828,6 +980,23 @@ void UpdateNewsPanel()
         }
       SetTxt("news_meta_"+IntegerToString(i),meta,clr);
       SetTxt("news_title_"+IntegerToString(i),title,(i<gNewsCount)? C_TEXT : C_MUTED);
+     }
+
+   SetTxt("headline_status",gHeadlineStatus,gHeadlineDataOK? C_MUTED : C_WARN);
+   for(int i=0;i<5;i++)
+     {
+      string title=(i==0 && !gHeadlineDataOK)? "Live news unavailable" : "No headline";
+      string meta="-";
+      if(i<gHeadlineCount)
+        {
+         title=gHeadlines[i].title;
+         if(StringLen(title)>48) title=StringSubstr(title,0,45)+"...";
+         meta=gHeadlines[i].source;
+         if(gHeadlines[i].seen!="") meta+=" | "+gHeadlines[i].seen+" UTC";
+         if(StringLen(meta)>58) meta=StringSubstr(meta,0,55)+"...";
+        }
+      SetTxt("headline_title_"+IntegerToString(i),title,i<gHeadlineCount? C_TEXT:C_MUTED);
+      SetTxt("headline_meta_"+IntegerToString(i),meta,C_MUTED);
      }
   }
 
@@ -1590,6 +1759,7 @@ int OnInit()
 
    UpdateStats(true);
    RefreshNews();
+   RefreshHeadlines();
    BuildPanel();
    EventSetMillisecondTimer(250);
    UpdatePanel();
@@ -1614,6 +1784,8 @@ void OnTimer()
    static int cnt=0;
    cnt++;
    if(cnt%240==0) RefreshNews();   // every 60 s
+   int headlineTicks=MathMax(1,MathMin(60,InpHeadlineRefreshMinutes))*240;
+   if(cnt%headlineTicks==0) RefreshHeadlines();
    UpdateTool();                   // every 250 ms
    if(cnt%4==0) UpdatePanel();     // every 1 s
   }
@@ -1648,6 +1820,11 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       else if(sparam==PFX+"btn_news_refresh")
         {
          RefreshNews();
+         UpdateNewsPanel();
+        }
+      else if(sparam==PFX+"btn_headline_refresh")
+        {
+         RefreshHeadlines(true);
          UpdateNewsPanel();
         }
       else if(sparam==PFX+"btn_tool")
