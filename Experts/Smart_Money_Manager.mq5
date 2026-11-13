@@ -942,7 +942,7 @@ void RefreshHeadlines(bool force=false)
 
    gHeadlineDataOK=true;
    gHeadlineStatus=(gHeadlineCount>0)?
-      IntegerToString(gHeadlineCount)+" headlines | GDELT | Last 24h":
+      IntegerToString(gHeadlineCount)+" headlines | GDELT Project: gdeltproject.org | Last 24h":
       "No matching headlines in the last 24h";
   }
 
