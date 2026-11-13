@@ -721,7 +721,7 @@ void RefreshNews()
    int days=InpNewsDisplayDays;
    if(days<1) days=1;
    if(days>14) days=14;
-   datetime from=now-60*60;
+   datetime from=now-InpNewsAfter*60;
    datetime to=now+(datetime)days*86400;
    int minImp=(InpNewsLevel==NEWS_HIGH)? (int)CALENDAR_IMPORTANCE_HIGH :
               (InpNewsLevel==NEWS_MED_HIGH)? (int)CALENDAR_IMPORTANCE_MODERATE :
@@ -744,14 +744,6 @@ void RefreshNews()
          MqlCalendarEvent ev;
          if(!CalendarEventById(vals[i].event_id,ev)) continue;
 
-         int n=ArraySize(gNews);
-         ArrayResize(gNews,n+1);
-         gNews[n].time=vals[i].time;
-         gNews[n].eventId=vals[i].event_id;
-         gNews[n].currency=cur[c];
-         gNews[n].title=ev.name;
-         gNews[n].importance=(int)ev.importance;
-
          if(InpNewsLevel!=NEWS_OFF &&
             (int)ev.importance>=minImp &&
             vals[i].time>=now-InpNewsBefore*60 &&
@@ -760,6 +752,18 @@ void RefreshNews()
             gNewsBlock=true;
             if(gNewsInfo=="") gNewsInfo=cur[c]+" "+ev.name;
            }
+
+         // The calendar list is for upcoming events; past events are only
+         // considered above for the post-news trading lock.
+         if(vals[i].time<now) continue;
+
+         int n=ArraySize(gNews);
+         ArrayResize(gNews,n+1);
+         gNews[n].time=vals[i].time;
+         gNews[n].eventId=vals[i].event_id;
+         gNews[n].currency=cur[c];
+         gNews[n].title=ev.name;
+         gNews[n].importance=(int)ev.importance;
         }
      }
 
