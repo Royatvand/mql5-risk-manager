@@ -112,6 +112,7 @@ CTrade trade;
 double gRisk, gRR, gLotFix;
 int    gSL, gDist, gExpiry;
 double gPeakEquity = 0;
+string gPeakEquityKey = "";
 string gStatus     = "Ready";
 color  gStatusClr  = C_ACCENT;
 bool   gLocked     = false;
@@ -439,10 +440,22 @@ double NormalizeLot(double lot)
    double mn=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
    double mx=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
    double st=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
-   if(st<=0) st=0.01;
+   if(lot<=0 || mn<=0 || mx<mn || st<=0) return 0;
+
+   // Never round a risk-sized volume up to the broker minimum: that can
+   // silently exceed the user's selected monetary risk.
+   if(lot<mn-1e-10) return 0;
+   lot=MathMin(lot,mx);
    lot=MathFloor(lot/st+1e-9)*st;
-   lot=MathMax(mn,MathMin(mx,lot));
-   int digits=(int)MathMax(0,MathRound(-MathLog10(st)));
+   if(lot<mn-1e-10) return 0;
+
+   int digits=0;
+   double step=st;
+   while(digits<8 && MathAbs(step-MathRound(step))>1e-8)
+     {
+      step*=10.0;
+      digits++;
+     }
    return NormalizeDouble(lot,digits);
   }
 
@@ -585,6 +598,23 @@ double RiskOf(double vol,double price,double sl,bool buy)
    return vol*dist/ts*TickValueLoss();
   }
 
+bool HasUnprotectedExposure()
+  {
+   for(int i=PositionsTotal()-1;i>=0;i--)
+     {
+      ulong t=PositionGetTicket(i);
+      if(t==0 || !MyPos(t)) continue;
+      if(PositionGetDouble(POSITION_SL)<=0) return true;
+     }
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      ulong t=OrderGetTicket(i);
+      if(t==0 || !MyOrder(t)) continue;
+      if(OrderGetDouble(ORDER_SL)<=0) return true;
+     }
+   return false;
+  }
+
 double OpenRiskMoney()
   {
    double sum=0;
@@ -641,8 +671,8 @@ void RefreshNews()
    if(InpNewsLevel==NEWS_OFF) return;
 
    datetime now=TimeTradeServer();
-   datetime from=now-InpNewsAfter*60;
-   datetime to=now+InpNewsBefore*60;
+   datetime from=now-InpNewsBefore*60;
+   datetime to=now+InpNewsAfter*60;
    int minImp=(InpNewsLevel==NEWS_HIGH)? (int)CALENDAR_IMPORTANCE_HIGH : (int)CALENDAR_IMPORTANCE_MODERATE;
 
    string cur[2];
@@ -732,9 +762,14 @@ bool MarginOK(ENUM_ORDER_TYPE type,double lot,double price)
    ENUM_ORDER_TYPE mt=(type==ORDER_TYPE_BUY || type==ORDER_TYPE_BUY_LIMIT || type==ORDER_TYPE_BUY_STOP)?
                       ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    double margin=0;
-   if(OrderCalcMargin(mt,_Symbol,lot,price,margin))
-      if(margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE)*0.95)
-        { SetStatus("Not enough free margin",C_SELL); return false; }
+   ResetLastError();
+   if(!OrderCalcMargin(mt,_Symbol,lot,price,margin) || margin<=0)
+     {
+      SetStatus("Margin calculation failed; order blocked",C_SELL);
+      return false;
+     }
+   if(margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE)*0.95)
+     { SetStatus("Not enough free margin",C_SELL); return false; }
    return true;
   }
 
@@ -855,6 +890,8 @@ bool ExecutePlan(ENUM_ORDER_TYPE type,double entry,double sl,double tp)
 
    if(InpMaxOpenRiskPct>0)
      {
+      if(HasUnprotectedExposure())
+        { SetStatus("Open exposure without SL: risk cannot be verified",C_WARN); return false; }
       double cap=AccountInfoDouble(ACCOUNT_BALANCE)*InpMaxOpenRiskPct/100.0;
       if(OpenRiskMoney()+lot*LossPerLot(slPts)>cap)
         { SetStatus("Open risk limit would be exceeded",C_WARN); return false; }
@@ -1308,7 +1345,11 @@ void UpdatePanel()
    double dayStart=bal-gRealized;
    if(dayStart<=0) dayStart=bal;
 
-   if(eq>gPeakEquity) gPeakEquity=eq;
+   if(eq>gPeakEquity)
+     {
+      gPeakEquity=eq;
+      if(gPeakEquityKey!="") GlobalVariableSet(gPeakEquityKey,gPeakEquity);
+     }
    double ddPct=(gPeakEquity>0)? (gPeakEquity-eq)/gPeakEquity*100.0 : 0;
    if(ddPct<0) ddPct=0;
 
@@ -1398,7 +1439,13 @@ int OnInit()
    gDist=InpEntryDistance;
    gExpiry=InpExpiryMinutes;
    gUseTool=InpUseChartTool;
-   gPeakEquity=MathMax(AccountInfoDouble(ACCOUNT_BALANCE),AccountInfoDouble(ACCOUNT_EQUITY));
+   gPeakEquityKey="SMM_PEAK_"+IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN));
+   double initialPeak=MathMax(AccountInfoDouble(ACCOUNT_BALANCE),AccountInfoDouble(ACCOUNT_EQUITY));
+   if(GlobalVariableCheck(gPeakEquityKey))
+      gPeakEquity=MathMax(initialPeak,GlobalVariableGet(gPeakEquityKey));
+   else
+      gPeakEquity=initialPeak;
+   GlobalVariableSet(gPeakEquityKey,gPeakEquity);
 
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpSlippage);
