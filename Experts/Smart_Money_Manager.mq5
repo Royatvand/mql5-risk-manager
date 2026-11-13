@@ -61,6 +61,7 @@ input int    InpMaxSpread        = 0;      // Max spread (points, 0 = off)
 input ENUM_NEWS_LEVEL InpNewsLevel = NEWS_OFF; // News filter (MT5 economic calendar)
 input int    InpNewsBefore       = 30;     // Block minutes before news
 input int    InpNewsAfter        = 30;     // Block minutes after news
+input int    InpNewsDisplayDays   = 3;      // Days ahead shown in News tab
 
 input group "=== Trade Management ==="
 input bool   InpUseBE            = true;   // Auto break-even
@@ -121,9 +122,9 @@ string gWarn       = "";
 string gLastReason = "";
 int    gPanelH     = 0;
 bool   gMin        = false;
-int    gTab        = 0;      // active tab: 0 Account, 1 Setup, 2 Trade, 3 Manage
+int    gTab        = 0;      // active tab: 0 Account, 1 Setup, 2 Trade, 3 Manage, 4 News
 int    gCurTab     = -1;     // tab currently being built
-int    gTabH[4];             // panel height per tab
+int    gTabH[5];             // panel height per tab
 string gObjs[];              // registered panel objects
 int    gObjTab[];            // tab index of each registered object
 bool   gUseTool    = true;   // chart tool on/off
@@ -138,9 +139,22 @@ int    gTradesToday= 0;
 int    gStreak     = 0;
 uint   gStatsTick  = 0;
 
-//--- news cache
-bool   gNewsBlock  = false;
-string gNewsInfo   = "";
+//--- economic calendar cache (times are broker trade-server time)
+struct NewsItem
+  {
+   datetime time;
+   ulong    eventId;
+   string   currency;
+   string   title;
+   int      importance;
+  };
+NewsItem gNews[];
+int      gNewsCount=0;
+bool     gNewsDataOK=false;
+datetime gNewsLastUpdate=0;
+bool     gNewsBlock=false;
+string   gNewsInfo="";
+string   gNewsStatus="Calendar not loaded";
 
 //+------------------------------------------------------------------+
 //| UI helpers                                                       |
@@ -248,7 +262,7 @@ void ApplyTab()
      }
 
    // tab button colors
-   for(int k=0;k<4;k++)
+   for(int k=0;k<5;k++)
      {
       string n=PFX+"tab_"+IntegerToString(k);
       color bg=(k==gTab)? C_ACCENT : C_BTN;
@@ -292,9 +306,9 @@ void BuildPanel()
 
    // ---------------- tab bar ----------------
    gCurTab=-2;
-   int tw=(inner-9)/4;
-   string tn[4]={"ACCOUNT","SETUP","TRADE","MANAGE"};
-   for(int k=0;k<4;k++)
+   int tw=(inner-12)/5;
+   string tn[5]={"ACCOUNT","SETUP","TRADE","MANAGE","NEWS"};
+   for(int k=0;k<5;k++)
       Btn("tab_"+IntegerToString(k),x+pad+k*(tw+3),y+56,tw,26,tn[k],C_BTN,C_TEXT,8);
 
    // ---------------- status bar (moved by ApplyTab) ----------------
@@ -425,6 +439,25 @@ void BuildPanel()
    Lbl("a3",x+pad+4,cy+46,s3,C_TEXT,9);
    cy+=84;
    gTabH[3]=cy-y;
+
+   // ================= TAB 4 : ECONOMIC NEWS =================
+   gCurTab=4;
+   cy=top;
+   Lbl("news_head",x+pad,cy,"ECONOMIC CALENDAR",C_ACCENT,8,"Segoe UI Semibold");
+   Btn("btn_news_refresh",x+PW-pad-76,cy-3,76,22,"REFRESH",C_BTN,C_TEXT,8);
+   cy+=24;
+   Lbl("news_status",x+pad,cy,"Loading calendar...",C_MUTED,8);
+   cy+=22;
+   Rect("news_card",x+pad-4,cy-4,inner+8,326,C_CARD,C_BORDER);
+   for(int i=0;i<8;i++)
+     {
+      int ry=cy+i*40;
+      Lbl("news_meta_"+IntegerToString(i),x+pad+4,ry+2,"-",C_WARN,8,"Segoe UI Semibold");
+      Lbl("news_title_"+IntegerToString(i),x+pad+4,ry+19,"-",C_TEXT,8);
+      if(i<7) Rect("news_sep_"+IntegerToString(i),x+pad+4,ry+37,inner-8,1,C_BORDER,C_BORDER);
+     }
+   cy+=336;
+   gTabH[4]=cy-y;
 
    // ---------------- finish ----------------
    gCurTab=-1;
@@ -667,13 +700,25 @@ bool InTradingHours()
 
 void RefreshNews()
   {
-   gNewsBlock=false; gNewsInfo="";
-   if(InpNewsLevel==NEWS_OFF) return;
+   gNewsBlock=false;
+   gNewsInfo="";
+   gNewsDataOK=false;
+   gNewsCount=0;
+   ArrayResize(gNews,0);
 
    datetime now=TimeTradeServer();
-   datetime from=now-InpNewsBefore*60;
-   datetime to=now+InpNewsAfter*60;
-   int minImp=(InpNewsLevel==NEWS_HIGH)? (int)CALENDAR_IMPORTANCE_HIGH : (int)CALENDAR_IMPORTANCE_MODERATE;
+   if(now<=0)
+     {
+      gNewsStatus="Waiting for trade-server time";
+      return;
+     }
+
+   int days=MathMax(1,MathMin(14,InpNewsDisplayDays));
+   datetime from=now-60*60;
+   datetime to=now+(datetime)days*86400;
+   int minImp=(InpNewsLevel==NEWS_HIGH)? (int)CALENDAR_IMPORTANCE_HIGH :
+              (InpNewsLevel==NEWS_MED_HIGH)? (int)CALENDAR_IMPORTANCE_MODERATE :
+              (int)CALENDAR_IMPORTANCE_LOW;
 
    string cur[2];
    cur[0]=SymbolInfoString(_Symbol,SYMBOL_CURRENCY_BASE);
@@ -683,16 +728,87 @@ void RefreshNews()
      {
       if(cur[c]=="" || (c==1 && cur[1]==cur[0])) continue;
       MqlCalendarValue vals[];
-      if(!CalendarValueHistory(vals,from,to,NULL,cur[c])) continue;
+      int found=CalendarValueHistory(vals,from,to,NULL,cur[c]);
+      if(found<0) continue;
+      gNewsDataOK=true;
+
       for(int i=0;i<ArraySize(vals);i++)
         {
          MqlCalendarEvent ev;
          if(!CalendarEventById(vals[i].event_id,ev)) continue;
-         if((int)ev.importance<minImp) continue;
-         gNewsBlock=true;
-         gNewsInfo=cur[c]+" "+ev.name;
-         return;
+
+         int n=ArraySize(gNews);
+         ArrayResize(gNews,n+1);
+         gNews[n].time=vals[i].time;
+         gNews[n].eventId=vals[i].event_id;
+         gNews[n].currency=cur[c];
+         gNews[n].title=ev.name;
+         gNews[n].importance=(int)ev.importance;
+
+         if(InpNewsLevel!=NEWS_OFF &&
+            (int)ev.importance>=minImp &&
+            vals[i].time>=now-InpNewsBefore*60 &&
+            vals[i].time<=now+InpNewsAfter*60)
+           {
+            gNewsBlock=true;
+            if(gNewsInfo=="") gNewsInfo=cur[c]+" "+ev.name;
+           }
         }
+     }
+
+   for(int i=0;i<ArraySize(gNews)-1;i++)
+      for(int j=i+1;j<ArraySize(gNews);j++)
+         if(gNews[j].time<gNews[i].time)
+           {
+            NewsItem tmp=gNews[i];
+            gNews[i]=gNews[j];
+            gNews[j]=tmp;
+           }
+
+   gNewsCount=ArraySize(gNews);
+   gNewsLastUpdate=now;
+   if(!gNewsDataOK)
+      gNewsStatus="Calendar unavailable (check connection / broker)";
+   else if(gNewsCount==0)
+      gNewsStatus="No calendar events for "+cur[0]+"/"+cur[1];
+   else
+      gNewsStatus=IntegerToString(gNewsCount)+" events | Server time "+TimeToString(now,TIME_MINUTES);
+  }
+
+string NewsImportanceName(int importance)
+  {
+   if(importance==(int)CALENDAR_IMPORTANCE_HIGH) return "HIGH";
+   if(importance==(int)CALENDAR_IMPORTANCE_MODERATE) return "MEDIUM";
+   if(importance==(int)CALENDAR_IMPORTANCE_LOW) return "LOW";
+   return "NONE";
+  }
+
+color NewsImportanceColor(int importance)
+  {
+   if(importance==(int)CALENDAR_IMPORTANCE_HIGH) return C_SELL;
+   if(importance==(int)CALENDAR_IMPORTANCE_MODERATE) return C_WARN;
+   if(importance==(int)CALENDAR_IMPORTANCE_LOW) return C_ACCENT;
+   return C_MUTED;
+  }
+
+void UpdateNewsPanel()
+  {
+   SetTxt("news_status",gNewsStatus,C_MUTED);
+   for(int i=0;i<8;i++)
+     {
+      string meta="-";
+      string title=(i==0 && !gNewsDataOK)? "Economic calendar data is not available" : "No event";
+      color clr=C_MUTED;
+      if(i<gNewsCount)
+        {
+         meta=gNews[i].currency+" | "+NewsImportanceName(gNews[i].importance)+
+              " | "+TimeToString(gNews[i].time,TIME_DATE|TIME_MINUTES);
+         title=gNews[i].title;
+         if(StringLen(title)>43) title=StringSubstr(title,0,40)+"...";
+         clr=NewsImportanceColor(gNews[i].importance);
+        }
+      SetTxt("news_meta_"+IntegerToString(i),meta,clr);
+      SetTxt("news_title_"+IntegerToString(i),title,(i<gNewsCount)? C_TEXT : C_MUTED);
      }
   }
 
@@ -1358,6 +1474,8 @@ void UpdatePanel()
    SetTxt("dot","●",gLocked? C_SELL : (gWarn!=""? C_WARN : C_ACCENT));
    if(gMin) { ChartRedraw(); return; }
 
+   UpdateNewsPanel();
+
    double ml=AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
    double used=AccountInfoDouble(ACCOUNT_MARGIN);
 
@@ -1476,7 +1594,7 @@ void OnTimer()
   {
    static int cnt=0;
    cnt++;
-   if(cnt%120==0) RefreshNews();   // every 30 s
+   if(cnt%240==0) RefreshNews();   // every 60 s
    UpdateTool();                   // every 250 ms
    if(cnt%4==0) UpdatePanel();     // every 1 s
   }
@@ -1507,6 +1625,11 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
         {
          gTab=(int)StringToInteger(StringSubstr(sparam,StringLen(PFX)+4,1));
          ApplyTab();
+        }
+      else if(sparam==PFX+"btn_news_refresh")
+        {
+         RefreshNews();
+         UpdateNewsPanel();
         }
       else if(sparam==PFX+"btn_tool")
         {
